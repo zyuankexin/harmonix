@@ -89,13 +89,13 @@
     vizBars.forEach((b) => (b.style.height = '3px'));
   }
 
-  // ========== Supabase 初始化 ==========
-  // 请替换为你自己的 Supabase 项目 URL 和 anon key
-  const SUPABASE_URL = 'YOUR_SUPABASE_URL';
-  const SUPABASE_ANON_KEY = 'YOUR_SUPABASE_ANON_KEY';
+  // ========== Supabase 初始化（使用环境变量） ==========
+  var envConfig = window.__ENV__ || {};
+  var SUPABASE_URL     = envConfig.SUPABASE_URL     || '';
+  var SUPABASE_ANON_KEY = envConfig.SUPABASE_ANON_KEY || '';
 
   let supabaseClient = null;
-  if (typeof window.supabase !== 'undefined' && SUPABASE_URL !== 'YOUR_SUPABASE_URL') {
+  if (typeof window.supabase !== 'undefined' && SUPABASE_URL && SUPABASE_ANON_KEY) {
     supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
   }
 
@@ -538,6 +538,9 @@
 
   // 从 Supabase 加载歌曲列表，成功后渲染播放列表
   (async function initPlaylist() {
+    // 显示加载状态
+    playlistList.innerHTML = '<div class="loading-state"><div class="loading-spinner"></div><div>正在加载歌曲列表…</div></div>';
+
     playlist = await fetchSongs();
     renderPlaylist();
   })();

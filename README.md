@@ -3,16 +3,22 @@
 
 ## Supabase 集成
 
-本项目使用 Supabase 作为歌曲列表的数据源。
+本项目使用 Supabase 作为歌曲列表的数据源，凭据通过**环境变量**注入，不硬编码在源码中。
 
-### 配置步骤
+### 环境变量配置
 
-1. 在 [Supabase](https://supabase.com) 创建项目
-2. 在 `js/script.js` 中填入你的项目凭据：
-   ```js
-   const SUPABASE_URL = 'https://xxxxx.supabase.co';
-   const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIs...';
-   ```
+| 变量名 | 说明 |
+|--------|------|
+| `SUPABASE_URL` | Supabase 项目 URL，如 `https://xxxxx.supabase.co` |
+| `SUPABASE_ANON_KEY` | Supabase anon/public key |
+
+**本地开发：**
+1. 复制 `.env.example` 为 `.env`，填入真实值
+2. 运行 `bash build.sh` 生成 `js/env.js`
+3. 打开 `index.html` 即可
+
+**Vercel 部署：**
+在 Vercel 项目 Settings → Environment Variables 中添加上述两个变量，构建时会自动执行 `build.sh` 生成 `js/env.js`。
 
 ### 数据库表结构
 

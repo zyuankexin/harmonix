@@ -3,7 +3,14 @@ import { createClient } from '@supabase/supabase-js';
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
-// 环境变量未配置时返回 null，不抛错
-export const supabase = (supabaseUrl && supabaseAnonKey)
-  ? createClient(supabaseUrl, supabaseAnonKey)
-  : null;
+// 用 try-catch 包裹 createClient，防止 key 无效时模块加载失败导致白屏
+let supabase = null;
+try {
+  if (supabaseUrl && supabaseAnonKey) {
+    supabase = createClient(supabaseUrl, supabaseAnonKey);
+  }
+} catch (err) {
+  console.warn('Supabase 初始化失败:', err.message);
+}
+
+export { supabase };

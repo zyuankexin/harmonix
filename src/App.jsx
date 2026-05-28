@@ -2,18 +2,7 @@ import { useEffect, useState, useRef, useCallback } from 'react';
 import { supabase } from './supabaseClient';
 import SongList from './components/SongList';
 import AuthModal from './components/AuthModal';
-
-// ========== 备用数据（Supabase 不可用时） ==========
-const fallbackPlaylist = [
-  { id: '1', title: '星空下的漫步', artist: 'Lune Blanche',  duration: '3:42', color: '#1a2a4a' },
-  { id: '2', title: '城市夜曲',     artist: 'Neon Pulse',   duration: '4:15', color: '#2a1a3a' },
-  { id: '3', title: '雨中即景',     artist: 'Violet Rain',  duration: '2:58', color: '#1a3a3a' },
-  { id: '4', title: '远方的风',     artist: 'Horizon',      duration: '5:03', color: '#3a2a1a' },
-  { id: '5', title: '午夜蓝调',     artist: 'Blue Hour',    duration: '3:31', color: '#1a1a3a' },
-  { id: '6', title: '晨光熹微',     artist: 'Aurora Dawn',  duration: '4:47', color: '#3a3a1a' },
-  { id: '7', title: '思绪漂流',     artist: 'Mindwave',     duration: '3:18', color: '#2a3a1a' },
-  { id: '8', title: '黄昏咖啡馆',   artist: 'Golden Hour',  duration: '4:02', color: '#3a1a2a' },
-];
+import CreatePlaylistModal from './components/CreatePlaylistModal';
 
 // ========== 工具函数 ==========
 function formatTime(sec) {
@@ -25,7 +14,8 @@ function formatTime(sec) {
 
 function App() {
   // ========== 状态 ==========
-  const [songs, setSongs] = useState([]);
+  const [songs, setSongs] = useState([]);           // 所有公共音乐
+  const [userSongs, setUserSongs] = useState([]);   // 用户自己上传的音乐
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [currentIndex, setCurrentIndex] = useState(-1);
@@ -42,6 +32,23 @@ function App() {
   // ========== Auth 状态 ==========
   const [user, setUser] = useState(null);
   const [showAuthModal, setShowAuthModal] = useState(false);
+  const [showUserMenu, setShowUserMenu] = useState(false);
+  
+  // ========== 面板状态 ==========
+  const [showMessagePanel, setShowMessagePanel] = useState(false);
+  const [showSettingsPanel, setShowSettingsPanel] = useState(false);
+  const [showProfilePanel, setShowProfilePanel] = useState(false);
+  const [showCreatePlaylistModal, setShowCreatePlaylistModal] = useState(false);
+  
+  // ========== 歌单数据 ==========
+  const [playlists, setPlaylists] = useState([]);
+  
+  // ========== 主题状态 ==========
+  const [theme, setTheme] = useState('dark'); // dark, light, ocean
+  
+  // ========== 视图状态 ==========
+  const [currentView, setCurrentView] = useState('discover'); // discover, playlist, playlist-detail
+  const [selectedPlaylist, setSelectedPlaylist] = useState(null);
 
   const audioRef = useRef(null);
   const audioCtxRef = useRef(null);
@@ -53,6 +60,7 @@ function App() {
   const shuffleOrderRef = useRef([]);
   const toastTimerRef = useRef(null);
   const lastVolRef = useRef(0.7);
+  const userMenuRef = useRef(null);
 
   const playlist = songs; // songs 即为播放列表
 
@@ -66,30 +74,32 @@ function App() {
     toastTimerRef.current = setTimeout(() => setToast(''), 2500);
   }, []);
 
-  // ========== 从 Supabase 加载歌曲 ==========
+  // ========== 从 Supabase 加载歌曲和歌单 ==========
   useEffect(() => {
-    async function fetchSongs() {
-      // Supabase 未配置时直接使用备用数据
+    async function fetchData() {
+      // Supabase 未配置时显示空内容
       if (!supabase) {
-        console.warn('Supabase 未配置，使用本地备用数据。请在 .env.local 中设置 VITE_SUPABASE_URL 和 VITE_SUPABASE_ANON_KEY');
-        setSongs(fallbackPlaylist);
+        console.warn('Supabase 未配置，请在 .env.local 中设置 VITE_SUPABASE_URL 和 VITE_SUPABASE_ANON_KEY');
+        setSongs([]);
+        setUserSongs([]);
+        setPlaylists([]);
         setLoading(false);
         return;
       }
 
-      // 关键查询语句：连接数据库的"开关"
-      const { data, error } = await supabase.from('songs').select('*');
+      // 加载所有公共音乐
+      const { data: allSongs, error: songsError } = await supabase.from('songs').select('*');
 
-      if (error) {
-        console.error('Supabase 查询失败:', error);
-        setError(error.message);
-        setSongs(fallbackPlaylist);
-        showToast('加载歌曲失败，使用本地数据');
-      } else if (!data || data.length === 0) {
-        console.warn('Supabase 返回空数据');
-        setSongs(fallbackPlaylist);
+      if (songsError) {
+        console.error('Supabase 查询歌曲失败:', songsError);
+        setError(songsError.message);
+        setSongs([]);
+        showToast('加载歌曲失败');
+      } else if (!allSongs || allSongs.length === 0) {
+        console.warn('Supabase 返回空歌曲数据');
+        setSongs([]);
       } else {
-        setSongs(data.map(song => ({
+        const formattedSongs = allSongs.map(song => ({
           id:       song.id,
           title:    song.title    || '未知曲目',
           artist:   song.artist   || '未知艺术家',
@@ -97,12 +107,65 @@ function App() {
           color:    song.color    || '#1a1a3e',
           coverUrl: song.cover_url || null,
           src:      song.src      || null,
-        })));
+          userId:   song.user_id  || null,
+          playlistId: song.playlist_id || null,
+        }));
+        setSongs(formattedSongs);
+        
+        // 如果用户已登录，筛选出用户自己上传的歌曲
+        if (user) {
+          const userUploaded = formattedSongs.filter(s => s.userId === user.id);
+          setUserSongs(userUploaded);
+        }
       }
+
+      // 如果用户已登录，加载用户的歌单
+      if (user) {
+        const { data: userPlaylists, error: playlistsError } = await supabase
+          .from('playlists')
+          .select('*')
+          .eq('user_id', user.id);
+        
+        if (playlistsError) {
+          console.error('Supabase 查询歌单失败:', playlistsError);
+          setPlaylists([]);
+        } else {
+          setPlaylists(userPlaylists || []);
+        }
+      } else {
+        setPlaylists([]);
+      }
+
       setLoading(false);
     }
-    fetchSongs();
-  }, []); // [] 确保只在加载时运行一次
+    fetchData();
+  }, [user]); // 用户变化时重新加载
+
+  // ========== 创建歌单 ==========
+  const handleCreatePlaylist = useCallback(async (name, description) => {
+    if (!supabase || !user) return;
+
+    const { error } = await supabase.from('playlists').insert({
+      name: name || '未命名歌单',
+      description: description || '',
+      user_id: user.id,
+      created_at: new Date().toISOString(),
+    });
+
+    if (error) {
+      showToast('创建歌单失败: ' + error.message);
+      return false;
+    } else {
+      showToast('歌单创建成功！');
+      // 重新加载歌单列表
+      const { data: userPlaylists } = await supabase
+        .from('playlists')
+        .select('*')
+        .eq('user_id', user.id);
+      setPlaylists(userPlaylists || []);
+      return true;
+    }
+  }, [user, showToast]);
 
   // ========== Auth: 初始化 session + 监听登录状态变化 ==========
   useEffect(() => {
@@ -125,6 +188,17 @@ function App() {
       console.warn('onAuthStateChange 失败:', err.message);
       return () => {};
     }
+  }, []);
+
+  // ========== 点击外部关闭用户菜单 ==========
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (userMenuRef.current && !userMenuRef.current.contains(event.target)) {
+        setShowUserMenu(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
   // ========== 登出 ==========
@@ -183,6 +257,8 @@ function App() {
         duration: '--:--',
         color: '#' + Math.floor(Math.random() * 16777215).toString(16).padStart(6, '0'),
         src: publicUrl,
+        user_id: user.id,      // 上传用户ID
+        created_at: new Date().toISOString(),  // 上传时间
       });
 
       if (insertError) {
@@ -198,8 +274,10 @@ function App() {
           color:    '#' + Math.floor(Math.random() * 16777215).toString(16).padStart(6, '0'),
           coverUrl: null,
           src:      publicUrl,
+          userId:   user.id,
         };
         setSongs(prev => [...prev, newSong]);
+        setUserSongs(prev => [...prev, newSong]);
       }
     }
   }, [user, showToast]);
@@ -409,6 +487,38 @@ function App() {
     if (audioRef.current) audioRef.current.volume = volume;
   }, [volume]);
 
+  // ========== 主题切换 ==========
+  useEffect(() => {
+    const themeColors = {
+      dark: {
+        '--bg-deep': '#06060e',
+        '--bg-sidebar': '#121212',
+        '--bg-player': '#181818',
+        '--accent': '#d4a574',
+        '--accent2': '#7b6fdf',
+      },
+      light: {
+        '--bg-deep': '#f8f9fa',
+        '--bg-sidebar': '#ffffff',
+        '--bg-player': '#f1f3f4',
+        '--accent': '#c97d4c',
+        '--accent2': '#6b5fd0',
+      },
+      ocean: {
+        '--bg-deep': '#0a192f',
+        '--bg-sidebar': '#112240',
+        '--bg-player': '#112240',
+        '--accent': '#64ffda',
+        '--accent2': '#9333ea',
+      },
+    };
+    const root = document.documentElement;
+    Object.entries(themeColors[theme]).forEach(([key, value]) => {
+      root.style.setProperty(key, value);
+    });
+    showToast(`已切换到${theme === 'dark' ? '深色' : theme === 'light' ? '浅色' : '海洋'}主题`);
+  }, [theme, showToast]);
+
   // ========== 文件上传 ==========
   const handleFileUpload = useCallback((files) => {
     const newSongs = Array.from(files)
@@ -467,6 +577,20 @@ function App() {
         />
       )}
 
+      {/* 创建歌单弹窗 */}
+      {showCreatePlaylistModal && (
+        <CreatePlaylistModal
+          onClose={() => setShowCreatePlaylistModal(false)}
+          onCreate={(name, desc) => {
+            handleCreatePlaylist(name, desc).then(success => {
+              if (success) {
+                setShowCreatePlaylistModal(false);
+              }
+            });
+          }}
+        />
+      )}
+
       {/* 全局布局：Sidebar + Main + Bottom Player */}
       <div className="app-layout">
 
@@ -479,37 +603,47 @@ function App() {
 
           <nav className="sidebar-nav">
             <div className="nav-section">
-              <div className="nav-item active">
+              <button 
+                className={`nav-item${currentView === 'discover' ? ' active' : ''}`}
+                onClick={() => setCurrentView('discover')}
+              >
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/>
                 </svg>
                 <span>发现音乐</span>
-              </div>
-              <div className="nav-item">
+              </button>
+              <button 
+                className={`nav-item${currentView === 'playlist' ? ' active' : ''}`}
+                onClick={() => setCurrentView('playlist')}
+              >
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <path d="M12 2a10 10 0 100 20 10 10 0 000-20z"/><polygon points="10 8 16 12 10 16 10 8"/>
                 </svg>
                 <span>我的歌单</span>
-              </div>
+              </button>
             </div>
           </nav>
 
-          <div className="sidebar-footer">
-            {user ? (
-              <div className="sidebar-user" onClick={handleLogout} title="点击登出">
-                <span className="user-avatar">{user.email.charAt(0).toUpperCase()}</span>
-                <span className="user-email">{user.email}</span>
-              </div>
-            ) : (
-              <button className="sidebar-login" onClick={() => setShowAuthModal(true)}>登录</button>
-            )}
-          </div>
+
         </aside>
 
         {/* 主内容区 */}
         <div className="main-content">
           {/* Header */}
           <header className="main-header">
+            <button className="header-btn header-back" onClick={() => {
+                    if (currentView === 'playlist-detail') {
+                      setCurrentView('playlist');
+                    } else if (currentView === 'playlist') {
+                      setCurrentView('discover');
+                    } else {
+                      showToast('已经是首页');
+                    }
+                  }}>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M19 12H5"/><polyline points="12 19 5 12 12 5"/>
+              </svg>
+            </button>
             <div className="header-search">
               <span className="header-search-icon">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -523,24 +657,243 @@ function App() {
                 onChange={e => setSearchText(e.target.value)}
               />
             </div>
+            <button className="header-btn header-message" onClick={() => setShowMessagePanel(true)}>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+              </svg>
+              <span className="badge">3</span>
+            </button>
+            <button className="header-btn header-settings" onClick={() => setShowSettingsPanel(true)}>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/>
+                <circle cx="12" cy="12" r="3"/>
+              </svg>
+            </button>
+            {user ? (
+              <div className="header-user-menu" ref={userMenuRef}>
+                <button className="header-user-btn" onClick={() => setShowUserMenu(!showUserMenu)}>
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
+                    <circle cx="12" cy="7" r="4"/>
+                  </svg>
+                  <span className="header-user-name">{user.email?.split('@')[0] || '用户'}</span>
+                </button>
+                {showUserMenu && (
+                  <div className="user-dropdown">
+                    <div className="dropdown-group">
+                      <button className="dropdown-item" onClick={() => { setShowUserMenu(false); setShowProfilePanel(true); }}>
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
+                          <circle cx="12" cy="7" r="4"/>
+                        </svg>
+                        <span>个人信息设置</span>
+                      </button>
+                    </div>
+                    <div className="dropdown-divider"></div>
+                    <div className="dropdown-group">
+                      <button className="dropdown-item" onClick={() => { setShowUserMenu(false); showToast('绑定社交账号功能开发中'); }}>
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M18 2h-3a5 5 0 0 0-5 5v3H7v4h3v8h4v-8h3l1-4h-4V7a1 1 0 0 1 1-1h3z"/>
+                        </svg>
+                        <span>绑定社交账号</span>
+                      </button>
+                      <button className="dropdown-item" onClick={() => { setShowUserMenu(false); showToast('当前已是最新版本'); }}>
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <polyline points="23 4 23 10 17 10"/><polyline points="18 21 18 15 24 15"/><path d="M20 10h-9v9"/><path d="M14 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h9"/>
+                        </svg>
+                        <span>检查更新</span>
+                      </button>
+                      <button className="dropdown-item" onClick={() => { setShowUserMenu(false); setShowSettingsPanel(true); }}>
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+                        </svg>
+                        <span>主题设置</span>
+                      </button>
+                    </div>
+                    <div className="dropdown-divider"></div>
+                    <div className="dropdown-group">
+                      <button className="dropdown-item logout" onClick={() => { setShowUserMenu(false); handleLogout(); }}>
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
+                          <polyline points="16 17 21 12 16 7"/>
+                          <line x1="21" y1="12" x2="9" y2="12"/>
+                        </svg>
+                        <span>退出登录</span>
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <button className="header-login-btn" onClick={() => setShowAuthModal(true)}>登录</button>
+            )}
           </header>
 
           {/* 内容 */}
           <div className="content-body">
-            <SongList
-              songs={playlist}
-              currentIndex={currentIndex}
-              loading={loading}
-              error={error}
-              searchText={searchText}
-              onSearchChange={setSearchText}
-              onSelectTrack={(idx) => { if (idx === currentIndex && audioRef.current.src) togglePlay(); else loadTrack(idx); }}
-              onFileUpload={handleFileUpload}
-              onPublishSong={handlePublishSong}
-              user={user}
-              onLoginClick={() => setShowAuthModal(true)}
-              onLogout={handleLogout}
-            />
+            {currentView === 'discover' ? (
+              <SongList
+                songs={playlist}
+                currentIndex={currentIndex}
+                loading={loading}
+                error={error}
+                searchText={searchText}
+                onSearchChange={setSearchText}
+                onSelectTrack={(idx) => { if (idx === currentIndex && audioRef.current.src) togglePlay(); else loadTrack(idx); }}
+                onFileUpload={handleFileUpload}
+                onPublishSong={handlePublishSong}
+                user={user}
+                onLoginClick={() => setShowAuthModal(true)}
+                onLogout={handleLogout}
+              />
+            ) : currentView === 'playlist' ? (
+              <div className="playlists-view">
+                <div className="section-header">
+                  <h2>我的歌单</h2>
+                  {user && (
+                    <button className="btn-primary" onClick={() => setShowCreatePlaylistModal(true)}>创建歌单</button>
+                  )}
+                </div>
+                <div className="playlists-grid">
+                  {!user ? (
+                    <div className="no-playlists">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M12 2a10 10 0 100 20 10 10 0 000-20z"/><polygon points="10 8 16 12 10 16 10 8"/>
+                      </svg>
+                      <p>请登录查看我的歌单</p>
+                      <p className="hint">登录后可以创建歌单并上传歌曲</p>
+                    </div>
+                  ) : playlists.length === 0 ? (
+                    <div className="no-playlists">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M12 2a10 10 0 100 20 10 10 0 000-20z"/><polygon points="10 8 16 12 10 16 10 8"/>
+                      </svg>
+                      <p>暂无歌单</p>
+                      <p className="hint">点击上方按钮创建新的歌单</p>
+                    </div>
+                  ) : (
+                    playlists.map(playlist => {
+                      // 获取该歌单的歌曲
+                      const playlistSongs = userSongs.filter(s => s.playlistId === playlist.id);
+                      return (
+                        <div 
+                          key={playlist.id}
+                          className="playlist-card" 
+                          onClick={() => {
+                            setSelectedPlaylist({
+                              id: playlist.id,
+                              name: playlist.name,
+                              cover: '🎵',
+                              description: playlist.description,
+                              creator: user?.email?.split('@')[0] || '我',
+                              createdAt: playlist.created_at?.split('T')[0] || new Date().toISOString().split('T')[0],
+                              songs: playlistSongs,
+                              likes: playlist.likes || 0,
+                              plays: playlist.plays || 0
+                            });
+                            setCurrentView('playlist-detail');
+                          }}
+                        >
+                          <div className="playlist-cover">🎵</div>
+                          <div className="playlist-info">
+                            <h3>{playlist.name}</h3>
+                            <p>{playlistSongs.length} 首歌曲</p>
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
+            ) : (
+              <div className="playlist-detail-view">
+                {/* 歌单头部 */}
+                <div className="detail-header">
+                  <div className="detail-cover">
+                    <span className="cover-icon">{selectedPlaylist?.cover || '🎵'}</span>
+                  </div>
+                  <div className="detail-info">
+                    <h1 className="detail-title">{selectedPlaylist?.name || '未知歌单'}</h1>
+                    <p className="detail-desc">{selectedPlaylist?.description || ''}</p>
+                    <div className="detail-meta">
+                      <span className="meta-item">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+                        </svg>
+                        {selectedPlaylist?.plays?.toLocaleString() || 0}
+                      </span>
+                      <span className="meta-item">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/>
+                        </svg>
+                        {selectedPlaylist?.likes || 0}
+                      </span>
+                      <span className="meta-item">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M12 2a10 10 0 100 20 10 10 0 000-20z"/><polygon points="10 8 16 12 10 16 10 8"/>
+                        </svg>
+                        {selectedPlaylist?.songs?.length || 0} 首歌曲
+                      </span>
+                    </div>
+                    <div className="detail-actions">
+                      <button className="btn-play-all" onClick={() => {
+                        if (selectedPlaylist?.songs?.length > 0) {
+                          setSongs(selectedPlaylist.songs);
+                          loadTrack(0);
+                        }
+                      }}>
+                        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+                        <span>播放全部</span>
+                      </button>
+                      <button className="btn-secondary">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/>
+                        </svg>
+                        <span>收藏</span>
+                      </button>
+                      <button className="btn-secondary">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+                        </svg>
+                        <span>分享</span>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {/* 歌曲列表 */}
+                <div className="detail-tracks">
+                  <div className="tracks-header">
+                    <span className="tracks-count">{selectedPlaylist?.songs?.length || 0} 首歌曲</span>
+                  </div>
+                  <div className="tracks-list">
+                    {(selectedPlaylist?.songs || []).map((song, idx) => (
+                      <div 
+                        key={idx}
+                        className={`track-item${currentIndex === idx && playlist[currentIndex]?.id === song.id ? ' active' : ''}`}
+                        onClick={() => {
+                          setSongs(selectedPlaylist.songs);
+                          loadTrack(idx);
+                        }}
+                      >
+                        <span className="track-number">{idx + 1}</span>
+                        <div className="track-info">
+                          <span className="track-title">{song.title}</span>
+                          <span className="track-artist">{song.artist}</span>
+                        </div>
+                        <span className="track-album">未知专辑</span>
+                        <button className="track-like">
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/>
+                          </svg>
+                        </button>
+                        <span className="track-duration">{song.duration || '--:--'}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -632,6 +985,142 @@ function App() {
           </div>
         </div>
       </div>
+
+      {/* 消息面板 */}
+      {showMessagePanel && (
+        <div className="panel-overlay" onClick={() => setShowMessagePanel(false)}>
+          <div className="panel-card" onClick={e => e.stopPropagation()}>
+            <div className="panel-header">
+              <h3>消息中心</h3>
+              <button className="panel-close" onClick={() => setShowMessagePanel(false)}>×</button>
+            </div>
+            <div className="panel-body">
+              <div className="message-list">
+                <div className="message-item">
+                  <div className="message-avatar">🎵</div>
+                  <div className="message-content">
+                    <div className="message-title">系统通知</div>
+                    <div className="message-text">您的歌曲已成功发布！</div>
+                    <div className="message-time">5分钟前</div>
+                  </div>
+                </div>
+                <div className="message-item">
+                  <div className="message-avatar">👥</div>
+                  <div className="message-content">
+                    <div className="message-title">好友动态</div>
+                    <div className="message-text">小明发布了新歌曲《夏日回忆》</div>
+                    <div className="message-time">1小时前</div>
+                  </div>
+                </div>
+                <div className="message-item unread">
+                  <div className="message-avatar">🔔</div>
+                  <div className="message-content">
+                    <div className="message-title">系统更新</div>
+                    <div className="message-text">新版本 v2.0 已发布，新增主题切换功能</div>
+                    <div className="message-time">2小时前</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 设置面板 */}
+      {showSettingsPanel && (
+        <div className="panel-overlay" onClick={() => setShowSettingsPanel(false)}>
+          <div className="panel-card settings-panel" onClick={e => e.stopPropagation()}>
+            <div className="panel-header">
+              <h3>主题设置</h3>
+              <button className="panel-close" onClick={() => setShowSettingsPanel(false)}>×</button>
+            </div>
+            <div className="panel-body">
+              <div className="settings-section">
+                <h4>选择主题</h4>
+                <div className="theme-options">
+                  <button 
+                    className={`theme-option${theme === 'dark' ? ' active' : ''}`}
+                    onClick={() => setTheme('dark')}
+                  >
+                    <div className="theme-preview dark-preview"></div>
+                    <span>深色主题</span>
+                  </button>
+                  <button 
+                    className={`theme-option${theme === 'light' ? ' active' : ''}`}
+                    onClick={() => setTheme('light')}
+                  >
+                    <div className="theme-preview light-preview"></div>
+                    <span>浅色主题</span>
+                  </button>
+                  <button 
+                    className={`theme-option${theme === 'ocean' ? ' active' : ''}`}
+                    onClick={() => setTheme('ocean')}
+                  >
+                    <div className="theme-preview ocean-preview"></div>
+                    <span>海洋主题</span>
+                  </button>
+                </div>
+              </div>
+              <div className="settings-section">
+                <h4>其他设置</h4>
+                <div className="settings-item">
+                  <span>自动播放</span>
+                  <label className="toggle-switch">
+                    <input type="checkbox" defaultChecked />
+                    <span className="slider"></span>
+                  </label>
+                </div>
+                <div className="settings-item">
+                  <span>显示可视化效果</span>
+                  <label className="toggle-switch">
+                    <input type="checkbox" defaultChecked />
+                    <span className="slider"></span>
+                  </label>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 个人信息面板 */}
+      {showProfilePanel && (
+        <div className="panel-overlay" onClick={() => setShowProfilePanel(false)}>
+          <div className="panel-card profile-panel" onClick={e => e.stopPropagation()}>
+            <div className="panel-header">
+              <h3>个人信息</h3>
+              <button className="panel-close" onClick={() => setShowProfilePanel(false)}>×</button>
+            </div>
+            <div className="panel-body">
+              <div className="profile-avatar">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
+                  <circle cx="12" cy="7" r="4"/>
+                </svg>
+              </div>
+              <div className="profile-info">
+                <h2>{user?.email?.split('@')[0] || '用户'}</h2>
+                <p>{user?.email}</p>
+              </div>
+              <div className="profile-stats">
+                <div className="stat-item">
+                  <span className="stat-value">12</span>
+                  <span className="stat-label">发布歌曲</span>
+                </div>
+                <div className="stat-item">
+                  <span className="stat-value">256</span>
+                  <span className="stat-label">收藏</span>
+                </div>
+                <div className="stat-item">
+                  <span className="stat-value">89</span>
+                  <span className="stat-label">关注者</span>
+                </div>
+              </div>
+              <button className="profile-edit-btn">编辑个人资料</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* 隐藏 Audio 元素 */}
       <audio ref={audioRef} preload="auto" />

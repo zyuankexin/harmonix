@@ -5,10 +5,13 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Aurhythm — 音乐播放器</title>
 
-  <!-- Google Fonts -->
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,600;0,700;1,400&family=Plus+Jakarta+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <!-- 系统默认字体 - 只使用通用字体族 -->
+  <style>
+    :root {
+      --font-family-sans: sans-serif;    /* 系统默认无衬线字体 */
+      --font-family-serif: serif;        /* 系统默认衬线字体 */
+    }
+  </style>
 </head>
 <body>
   <div id="root"></div>

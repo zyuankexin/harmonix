@@ -50,6 +50,9 @@ function App() {
   const [currentView, setCurrentView] = useState('discover'); // discover, playlist, playlist-detail
   const [selectedPlaylist, setSelectedPlaylist] = useState(null);
 
+  // ========== 添加到歌单状态 ==========
+  const [addToPlaylistTarget, setAddToPlaylistTarget] = useState(null); // { songId, x, y }
+
   const audioRef = useRef(null);
   const audioCtxRef = useRef(null);
   const analyserRef = useRef(null);
@@ -61,6 +64,8 @@ function App() {
   const toastTimerRef = useRef(null);
   const lastVolRef = useRef(0.7);
   const userMenuRef = useRef(null);
+  const recommendingRef = useRef(new Set());   // 防重复推荐
+  const playsUpdatingRef = useRef(new Set());  // 防重复播放计数
 
   const playlist = songs; // songs 即为播放列表
 
@@ -100,15 +105,20 @@ function App() {
         setSongs([]);
       } else {
         const formattedSongs = allSongs.map(song => ({
-          id:       song.id,
-          title:    song.title    || '未知曲目',
-          artist:   song.artist   || '未知艺术家',
-          duration: song.duration || '--:--',
-          color:    song.color    || '#1a1a3e',
-          coverUrl: song.cover_url || null,
-          src:      song.src      || null,
-          userId:   song.user_id  || null,
+          id:         song.song_id,
+          title:      song.title    || '未知曲目',
+          artist:     song.artist   || '未知艺术家',
+          duration:   song.duration || '--:--',
+          color:      song.color    || '#1a1a3e',
+          coverUrl:   song.cover_url || null,
+          src:        song.song_url || null,
+          userId:     song.user_id  || null,
           playlistId: song.playlist_id || null,
+          // 统计数据（直接使用数据库字段，NULL 时默认为 0）
+          plays:      song.plays      ?? 0,
+          recommends: song.recommends ?? 0,
+          likes:      song.likes      ?? 0,
+          comments:   song.comments   ?? 0,
         }));
         setSongs(formattedSongs);
         
@@ -171,17 +181,41 @@ function App() {
   useEffect(() => {
     if (!supabase) return;
 
-    // 获取当前 session（加 try-catch 防止 key 无效时白屏）
+    // 获取当前 session
     supabase.auth.getSession().then(({ data: { session } }) => {
       setUser(session?.user ?? null);
     }).catch((err) => {
       console.warn('getSession 失败:', err.message);
+      // 如果刷新令牌无效，直接清除 localStorage 中的认证数据
+      if (err.message?.includes('Refresh Token') || err.message?.includes('Invalid')) {
+        Object.keys(localStorage).forEach(key => {
+          if (key.startsWith('sb-')) localStorage.removeItem(key);
+        });
+        console.log('已清除无效的本地认证数据');
+      }
+      setUser(null);
     });
 
-    // 监听 auth 状态变化（登录/登出/Token 刷新等）
+    // 监听 auth 状态变化（登录/登出/邮箱验证/Token 刷新等）
     try {
-      const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
         setUser(session?.user ?? null);
+
+        // 根据事件类型给出提示（延迟显示，避免覆盖初始加载时的 toast）
+        switch (event) {
+          case 'SIGNED_IN':
+            if (session?.user?.email_confirmed_at) {
+              // 邮箱验证成功后自动登录，延迟显示 toast
+              setTimeout(() => showToast('登录成功'), 500);
+            }
+            break;
+          case 'USER_UPDATED':
+            showToast('用户信息已更新');
+            break;
+          case 'PASSWORD_RECOVERY':
+            showToast('请检查邮箱重置密码');
+            break;
+        }
       });
       return () => subscription.unsubscribe();
     } catch (err) {
@@ -212,6 +246,83 @@ function App() {
       showToast('登出失败: ' + err.message);
     }
   }, [showToast]);
+
+  // ========== 推荐歌曲 ==========
+  const handleRecommendSong = useCallback(async (songId) => {
+    if (!supabase || !user) {
+      showToast('请先登录');
+      return;
+    }
+
+    // 防止快速连点造成重复请求
+    if (recommendingRef.current.has(songId)) return;
+
+    const song = songs.find(s => s.id === songId);
+    if (!song) return;
+
+    // 本地歌曲不支持推荐
+    if (song.isLocal) {
+      showToast('本地歌曲暂不支持推荐');
+      return;
+    }
+
+    recommendingRef.current.add(songId);
+    const oldRecommends = song.recommends || 0;
+    const newRecommends = oldRecommends + 1;
+
+    // 乐观更新 UI（立即响应用户操作）
+    setSongs(prev => prev.map(s =>
+      s.id === songId ? { ...s, recommends: newRecommends } : s
+    ));
+
+    const { error } = await supabase.from('songs')
+      .update({ recommends: newRecommends })
+      .eq('song_id', songId);
+
+    recommendingRef.current.delete(songId);
+
+    if (error) {
+      // 失败则回滚到旧值
+      setSongs(prev => prev.map(s =>
+        s.id === songId ? { ...s, recommends: oldRecommends } : s
+      ));
+      showToast('操作失败: ' + error.message);
+    } else {
+      showToast('已推荐 ⭐');
+    }
+  }, [user, songs, showToast]);
+
+  // ========== 添加歌曲到歌单 ==========
+  const handleAddToPlaylist = useCallback(async (songId, playlistId) => {
+    if (!supabase || !user) {
+      showToast('请先登录');
+      return;
+    }
+    const song = songs.find(s => s.id === songId);
+    if (!song) return;
+    if (!song.userId || song.userId !== user.id) {
+      showToast('只能将自己的歌曲添加到歌单');
+      return;
+    }
+
+    const { error } = await supabase.from('songs')
+      .update({ playlist_id: playlistId })
+      .eq('song_id', songId);
+
+    if (error) {
+      showToast('操作失败: ' + error.message);
+    } else {
+      const targetPlaylist = playlists.find(p => p.id === playlistId);
+      setSongs(prev => prev.map(s =>
+        s.id === songId ? { ...s, playlistId } : s
+      ));
+      setUserSongs(prev => prev.map(s =>
+        s.id === songId ? { ...s, playlistId } : s
+      ));
+      showToast(`已添加到「${targetPlaylist?.name || '歌单'}」`);
+    }
+    setAddToPlaylistTarget(null);
+  }, [user, songs, playlists, showToast]);
 
   // ========== 发布歌曲到 Supabase（需登录） ==========
   const handlePublishSong = useCallback(async (files) => {
@@ -251,33 +362,45 @@ function App() {
 
       // 3. 插入 songs 表
       const title = file.name.replace(/\.[^/.]+$/, '');
-      const { error: insertError } = await supabase.from('songs').insert({
+      const { data: insertedSongs, error: insertError } = await supabase.from('songs').insert({
         title: title,
         artist: user.email || '未知艺术家',
         duration: '--:--',
         color: '#' + Math.floor(Math.random() * 16777215).toString(16).padStart(6, '0'),
-        src: publicUrl,
-        user_id: user.id,      // 上传用户ID
-        created_at: new Date().toISOString(),  // 上传时间
-      });
+        song_url: publicUrl,
+        user_id: user.id,
+        created_at: new Date().toISOString(),
+        plays: 0,
+        recommends: 0,
+        likes: 0,
+        comments: 0,
+      }).select();
 
       if (insertError) {
         showToast('发布失败: ' + insertError.message);
       } else {
         showToast('"' + title + '" 发布成功！');
-        // 直接将新发布的歌曲添加到状态，无需重新查询全表
-        const newSong = {
-          id:       Date.now().toString(),
-          title:    title,
-          artist:   user.email || '未知艺术家',
-          duration: '--:--',
-          color:    '#' + Math.floor(Math.random() * 16777215).toString(16).padStart(6, '0'),
-          coverUrl: null,
-          src:      publicUrl,
-          userId:   user.id,
-        };
-        setSongs(prev => [...prev, newSong]);
-        setUserSongs(prev => [...prev, newSong]);
+        // 用数据库返回的数据更新状态
+        if (insertedSongs && insertedSongs.length > 0) {
+          const dbSong = insertedSongs[0];
+          const newSong = {
+            id:         dbSong.song_id,
+            title:      dbSong.title,
+            artist:     dbSong.artist,
+            duration:   dbSong.duration || '--:--',
+            color:      dbSong.color || '#1a1a3e',
+            coverUrl:   dbSong.cover_url || null,
+            src:        dbSong.song_url,
+            userId:     dbSong.user_id,
+            playlistId: dbSong.playlist_id || null,
+            plays:      dbSong.plays || 0,
+            recommends: dbSong.recommends || 0,
+            likes:      dbSong.likes || 0,
+            comments:   dbSong.comments || 0,
+          };
+          setSongs(prev => [...prev, newSong]);
+          setUserSongs(prev => [...prev, newSong]);
+        }
       }
     }
   }, [user, showToast]);
@@ -347,7 +470,32 @@ function App() {
       audioRef.current.src = track.src;
       audioRef.current.load();
       audioRef.current.play().then(
-        () => setIsPlaying(true),
+        () => {
+          setIsPlaying(true);
+          // 更新播放次数（乐观更新 + 防同一首歌重复计数）
+          if (track.id && !track.isLocal && !playsUpdatingRef.current.has(track.id)) {
+            playsUpdatingRef.current.add(track.id);
+            const oldPlays = track.plays || 0;
+            const newPlays = oldPlays + 1;
+
+            setSongs(prev => prev.map(s =>
+              s.id === track.id ? { ...s, plays: newPlays } : s
+            ));
+
+            supabase.from('songs')
+              .update({ plays: newPlays })
+              .eq('song_id', track.id)
+              .then(({ error }) => {
+                playsUpdatingRef.current.delete(track.id);
+                if (error) {
+                  // 失败则回滚
+                  setSongs(prev => prev.map(s =>
+                    s.id === track.id ? { ...s, plays: oldPlays } : s
+                  ));
+                }
+              });
+          }
+        },
         () => { showToast('无法加载 "' + track.title + '"'); setIsPlaying(false); }
       );
     } else {
@@ -488,6 +636,7 @@ function App() {
   }, [volume]);
 
   // ========== 主题切换 ==========
+  const themeMountedRef = useRef(false);
   useEffect(() => {
     const themeColors = {
       dark: {
@@ -516,7 +665,12 @@ function App() {
     Object.entries(themeColors[theme]).forEach(([key, value]) => {
       root.style.setProperty(key, value);
     });
-    showToast(`已切换到${theme === 'dark' ? '深色' : theme === 'light' ? '浅色' : '海洋'}主题`);
+    // 首次渲染不弹 toast
+    if (themeMountedRef.current) {
+      showToast(`已切换到${theme === 'dark' ? '深色' : theme === 'light' ? '浅色' : '海洋'}主题`);
+    } else {
+      themeMountedRef.current = true;
+    }
   }, [theme, showToast]);
 
   // ========== 文件上传 ==========
@@ -531,6 +685,10 @@ function App() {
         src: URL.createObjectURL(file),
         color: '#' + Math.floor(Math.random() * 16777215).toString(16).padStart(6, '0'),
         isLocal: true,
+        plays: 0,
+        recommends: 0,
+        likes: 0,
+        comments: 0,
       }));
     if (newSongs.length) {
       setSongs(prev => [...prev, ...newSongs]);
@@ -740,11 +898,18 @@ function App() {
                 searchText={searchText}
                 onSearchChange={setSearchText}
                 onSelectTrack={(idx) => { if (idx === currentIndex && audioRef.current.src) togglePlay(); else loadTrack(idx); }}
-                onFileUpload={handleFileUpload}
-                onPublishSong={handlePublishSong}
+                onRecommend={handleRecommendSong}
+                onAddToPlaylist={(songId, e) => {
+                  if (!user) { showToast('请先登录'); return; }
+                  if (playlists.length === 0) { showToast('请先创建歌单'); return; }
+                  const rect = e.currentTarget.getBoundingClientRect();
+                  setAddToPlaylistTarget({ songId, x: rect.left, y: rect.bottom + 4 });
+                }}
+                playlists={playlists}
                 user={user}
-                onLoginClick={() => setShowAuthModal(true)}
-                onLogout={handleLogout}
+                addToPlaylistTarget={addToPlaylistTarget}
+                onSelectPlaylist={(playlistId) => handleAddToPlaylist(addToPlaylistTarget?.songId, playlistId)}
+                onClosePlaylistPicker={() => setAddToPlaylistTarget(null)}
               />
             ) : currentView === 'playlist' ? (
               <div className="playlists-view">

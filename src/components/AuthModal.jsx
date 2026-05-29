@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 
 function AuthModal({ onClose, onAuthSuccess }) {
   const [isLogin, setIsLogin] = useState(true);
@@ -8,9 +8,38 @@ function AuthModal({ onClose, onAuthSuccess }) {
   const [msg, setMsg] = useState('');
   const [pendingEmail, setPendingEmail] = useState(''); // 待验证的邮箱
   const [resending, setResending] = useState(false);
+  const [cooldown, setCooldown] = useState(0);
+  const timerRef = useRef(null);
+
+  const cooldownRef = useRef(cooldown);
+  cooldownRef.current = cooldown;
+
+  // 倒计时（只启动一次 interval）
+  useEffect(() => {
+    timerRef.current = setInterval(() => {
+      setCooldown(prev => {
+        if (prev <= 1) return 0;
+        return prev - 1;
+      });
+    }, 1000);
+    return () => clearInterval(timerRef.current);
+  }, []);
+
+  // 翻译 Supabase 错误信息
+  const translateError = (message) => {
+    if (!message) return '操作失败';
+    if (message.includes('Email not confirmed')) return '邮箱未验证，请查收验证邮件';
+    if (message.includes('Invalid login credentials')) return '邮箱或密码错误';
+    if (message.includes('User already registered')) return '该邮箱已被注册，请直接登录';
+    if (message.includes('Password should be at least')) return '密码至少需要 6 位';
+    if (message.includes('rate limit') || message.includes('60 seconds') || message.includes('too many'))
+      return '发送过于频繁，请等待 60 秒后再试';
+    return message;
+  };
 
   // 重发验证邮件
   const handleResendEmail = async () => {
+    if (cooldown > 0) return;
     setResending(true);
     setMsg('');
     try {
@@ -25,9 +54,17 @@ function AuthModal({ onClose, onAuthSuccess }) {
         email: pendingEmail,
       });
       if (error) {
-        setMsg(error.message);
+        const isRateLimit = error.message?.includes('rate limit') || error.message?.includes('60 seconds');
+        if (isRateLimit) {
+          // 被限速后不再允许重试，避免死循环。请关闭弹窗重新打开后再试。
+          setMsg('发送太频繁，请先检查邮箱（包括垃圾箱），关闭弹窗重新打开后可再试');
+          setPendingEmail('');
+        } else {
+          setMsg(translateError(error.message));
+        }
       } else {
         setMsg('验证邮件已重新发送，请查收邮箱。');
+        setCooldown(90);
       }
     } catch (err) {
       setMsg(err.message || '发送失败');
@@ -39,7 +76,6 @@ function AuthModal({ onClose, onAuthSuccess }) {
     e.preventDefault();
     setSubmitting(true);
     setMsg('');
-    setPendingEmail('');
 
     try {
       // 动态导入 supabase，避免未配置时报错
@@ -58,7 +94,7 @@ function AuthModal({ onClose, onAuthSuccess }) {
       }
 
       if (result.error) {
-        setMsg(result.error.message);
+        setMsg(translateError(result.error.message));
         setSubmitting(false);
         // 登录时如果邮箱未验证，保存邮箱以便重发验证邮件
         if (isLogin && result.error.message?.includes('Email not confirmed')) {
@@ -68,6 +104,7 @@ function AuthModal({ onClose, onAuthSuccess }) {
         if (!isLogin && result.data?.user && !result.data.session) {
           // 需要邮箱确认
           setPendingEmail(email);
+          setCooldown(90);
           setMsg('注册成功！请查收邮箱确认链接后登录。');
           setSubmitting(false);
           return;
@@ -122,9 +159,9 @@ function AuthModal({ onClose, onAuthSuccess }) {
               type="button"
               className="auth-resend"
               onClick={handleResendEmail}
-              disabled={resending}
+              disabled={resending || cooldown > 0}
             >
-              {resending ? '发送中…' : '重新发送验证邮件'}
+              {resending ? '发送中…' : cooldown > 0 ? `${cooldown} 秒后可重发` : '重新发送验证邮件'}
             </button>
           )}
 
@@ -135,9 +172,9 @@ function AuthModal({ onClose, onAuthSuccess }) {
 
         <div className="auth-switch">
           {isLogin ? (
-            <>还没有账号？<button onClick={() => { setIsLogin(false); setMsg(''); setPendingEmail(''); }}>注册</button></>
+            <>还没有账号？<button onClick={() => { setIsLogin(false); setMsg(''); setPendingEmail(''); setCooldown(0); }}>注册</button></>
           ) : (
-            <>已有账号？<button onClick={() => { setIsLogin(true); setMsg(''); setPendingEmail(''); }}>登录</button></>
+            <>已有账号？<button onClick={() => { setIsLogin(true); setMsg(''); setPendingEmail(''); setCooldown(0); }}>登录</button></>
           )}
         </div>
       </div>

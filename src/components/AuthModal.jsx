@@ -52,6 +52,7 @@ function AuthModal({ onClose, onAuthSuccess }) {
       const { error } = await supabase.auth.resend({
         type: 'signup',
         email: pendingEmail,
+        options: { emailRedirectTo: window.location.origin },
       });
       if (error) {
         const isRateLimit = error.message?.includes('rate limit') || error.message?.includes('60 seconds');
@@ -90,7 +91,11 @@ function AuthModal({ onClose, onAuthSuccess }) {
       if (isLogin) {
         result = await supabase.auth.signInWithPassword({ email, password });
       } else {
-        result = await supabase.auth.signUp({ email, password });
+        result = await supabase.auth.signUp({
+          email,
+          password,
+          options: { emailRedirectTo: window.location.origin },
+        });
       }
 
       if (result.error) {

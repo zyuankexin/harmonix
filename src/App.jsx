@@ -92,57 +92,70 @@ function App() {
         return;
       }
 
-      // 加载所有公共音乐
-      const { data: allSongs, error: songsError } = await supabase.from('songs').select('*');
+      try {
+        // 加载所有公共音乐（8秒超时兜底，防止网络卡住导致 loading 永远不灭）
+        const songsPromise = supabase.from('songs').select('*');
+        const timeoutPromise = new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('请求超时，请检查网络')), 8000)
+        );
+        const { data: allSongs, error: songsError } = await Promise.race([songsPromise, timeoutPromise]);
 
-      if (songsError) {
-        console.error('Supabase 查询歌曲失败:', songsError);
-        setError(songsError.message);
-        setSongs([]);
-        showToast('加载歌曲失败');
-      } else if (!allSongs || allSongs.length === 0) {
-        console.warn('Supabase 返回空歌曲数据');
-        setSongs([]);
-      } else {
-        const formattedSongs = allSongs.map(song => ({
-          id:         song.song_id,
-          title:      song.title    || '未知曲目',
-          artist:     song.artist   || '未知艺术家',
-          duration:   song.duration || '--:--',
-          color:      song.color    || '#1a1a3e',
-          coverUrl:   song.cover_url || null,
-          src:        song.song_url || null,
-          userId:     song.user_id  || null,
-          playlistId: song.playlist_id || null,
-          // 统计数据（直接使用数据库字段，NULL 时默认为 0）
-          plays:      song.plays      ?? 0,
-          recommends: song.recommends ?? 0,
-          likes:      song.likes      ?? 0,
-          comments:   song.comments   ?? 0,
-        }));
-        setSongs(formattedSongs);
-        
-        // 如果用户已登录，筛选出用户自己上传的歌曲
-        if (user) {
-          const userUploaded = formattedSongs.filter(s => s.userId === user.id);
-          setUserSongs(userUploaded);
-        }
-      }
-
-      // 如果用户已登录，加载用户的歌单
-      if (user) {
-        const { data: userPlaylists, error: playlistsError } = await supabase
-          .from('playlists')
-          .select('*')
-          .eq('user_id', user.id);
-        
-        if (playlistsError) {
-          console.error('Supabase 查询歌单失败:', playlistsError);
-          setPlaylists([]);
+        if (songsError) {
+          console.error('Supabase 查询歌曲失败:', songsError);
+          setError(songsError.message);
+          setSongs([]);
+          showToast('加载歌曲失败');
+        } else if (!allSongs || allSongs.length === 0) {
+          console.warn('Supabase 返回空歌曲数据');
+          setSongs([]);
         } else {
-          setPlaylists(userPlaylists || []);
+          const formattedSongs = allSongs.map(song => ({
+            id:         song.song_id,
+            title:      song.title    || '未知曲目',
+            artist:     song.artist   || '未知艺术家',
+            duration:   song.duration || '--:--',
+            color:      song.color    || '#1a1a3e',
+            coverUrl:   song.cover_url || null,
+            src:        song.song_url || null,
+            userId:     song.user_id  || null,
+            playlistId: song.playlist_id || null,
+            // 统计数据（直接使用数据库字段，NULL 时默认为 0）
+            plays:      song.plays      ?? 0,
+            recommends: song.recommends ?? 0,
+            likes:      song.likes      ?? 0,
+            comments:   song.comments   ?? 0,
+          }));
+          setSongs(formattedSongs);
+
+          // 如果用户已登录，筛选出用户自己上传的歌曲
+          if (user) {
+            const userUploaded = formattedSongs.filter(s => s.userId === user.id);
+            setUserSongs(userUploaded);
+          }
         }
-      } else {
+
+        // 如果用户已登录，加载用户的歌单
+        if (user) {
+          const { data: userPlaylists, error: playlistsError } = await supabase
+            .from('playlists')
+            .select('*')
+            .eq('user_id', user.id);
+
+          if (playlistsError) {
+            console.error('Supabase 查询歌单失败:', playlistsError);
+            setPlaylists([]);
+          } else {
+            setPlaylists(userPlaylists || []);
+          }
+        } else {
+          setPlaylists([]);
+        }
+      } catch (err) {
+        console.error('加载数据异常:', err);
+        setError(err.message || '加载失败');
+        showToast(err.message || '加载失败');
+        setSongs([]);
+        setUserSongs([]);
         setPlaylists([]);
       }
 

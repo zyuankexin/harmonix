@@ -220,7 +220,15 @@ function App() {
             if (session?.user?.email_confirmed_at) {
               // 邮箱验证成功后自动登录，延迟显示 toast
               setTimeout(() => showToast('登录成功'), 500);
+            } else {
+              // 邮箱未验证，不允许登录，立即登出
+              setUser(null);
+              supabase.auth.signOut();
+              showToast('请先验证邮箱后再登录');
             }
+            break;
+          case 'SIGNED_OUT':
+            setUser(null);
             break;
           case 'USER_UPDATED':
             showToast('用户信息已更新');

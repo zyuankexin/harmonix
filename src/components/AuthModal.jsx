@@ -106,13 +106,24 @@ function AuthModal({ onClose, onAuthSuccess }) {
           setPendingEmail(email);
         }
       } else {
-        if (!isLogin && result.data?.user && !result.data.session) {
-          // 需要邮箱确认
-          setPendingEmail(email);
-          setCooldown(90);
-          setMsg('注册成功！请查收邮箱确认链接后登录。');
-          setSubmitting(false);
-          return;
+        // 注册后检查邮箱是否已验证
+        if (!isLogin && result.data?.user) {
+          if (!result.data.session) {
+            // Supabase 开启了邮箱确认（无 session）
+            setPendingEmail(email);
+            setCooldown(90);
+            setMsg('注册成功！请查收邮箱确认链接后登录。');
+            setSubmitting(false);
+            return;
+          }
+          if (!result.data.user.email_confirmed_at) {
+            // Supabase 未开启邮箱确认，但客户端强制要求验证
+            setPendingEmail(email);
+            setCooldown(90);
+            setMsg('注册成功！请查收邮箱确认链接后登录。');
+            setSubmitting(false);
+            return;
+          }
         }
         setSubmitting(false);
         onAuthSuccess(result.data.user);
